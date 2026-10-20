@@ -1,29 +1,54 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      target: dev
     container_name: realtime-gpt
+    init: true
     ports:
-      - "3004:3000"
+      - "127.0.0.1:3004:3000"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
     volumes:
-      - .:/usr/src/app              # ✅ Mount your entire project folder
-      - /usr/src/app/node_modules   # ✅ Keep container’s node_modules intact
-    command: sh -c "sleep 5 && nodemon --legacy-watch server.js"  # ✅ Live reload support
+      - .:/usr/src/app
+      - /usr/src/app/node_modules   # keep the image's node_modules (renew with up -V)
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
 
   redis:
     image: redis:7.2
     container_name: realtime-redis
-    restart: "no"
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # Plain redis-server when REDIS_PASSWORD is empty; --requirepass otherwise.
+    # Goes through the image entrypoint so Redis still drops to the redis user.
+    command: ["sh", "-c", "exec docker-entrypoint.sh redis-server $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\" --no-auth-warning} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   redis_data:

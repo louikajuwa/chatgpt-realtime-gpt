@@ -1,33 +1,24 @@
-# Use Node.js 18 as the base image
-FROM node:18
-
-# Set working directory
+# syntax=docker/dockerfile:1
+FROM node:22-slim AS base
 WORKDIR /usr/src/app
 
-# Copy package files first for better caching
+# ---- dev: all deps + nodemon (used by docker-compose.yml) ----
+FROM base AS dev
 COPY package*.json ./
-
-# Install app dependencies (only once for cache efficiency)
-RUN npm install
-
-# Install required libraries explicitly (in case they’re not in package.json)
-RUN npm install ioredis@5.3.2 socket.io@4.8.1 openai@6.6.0 dotenv ws@8.18.3
-
-
-
-# Install nodemon globally for live reload during development
-RUN npm install -g nodemon
-
-# Copy the rest of your source code
-COPY . .
-
-# Expose the app port
+RUN npm ci
+COPY --chown=node:node . .
+USER node
 EXPOSE 3000
+CMD ["npm", "run", "dev"]
 
-# Set default environment variables (can be overridden in docker-compose)
-ENV REDIS_HOST=redis
-ENV REDIS_PORT=6379
-ENV OPENAI_API_KEY=changeme
-
-# Start app using nodemon for auto-reload
-CMD ["nodemon", "--legacy-watch", "server.js"]
+# ---- prod: production deps only (last stage = default build target) ----
+FROM base AS prod
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --chown=node:node . .
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "server.js"]

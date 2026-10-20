@@ -1,71 +1,101 @@
 # realtime-gpt
 
-A real-time voice/text assistant built on the OpenAI Realtime API (WebSocket streaming), running as a Node.js app with Redis, orchestrated via Docker Compose.
+A push-to-talk voice assistant built on the OpenAI Realtime (GA) API. A "brain" stored in Redis (key `vbrain:content`) is used as the session instructions for every conversation.
+
+```
+Browser  <--Socket.IO-->  Node bridge (Express)  <--WebSocket-->  OpenAI Realtime
+                               |
+                             Redis (brain)
+```
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose v2](https://docs.docker.com/compose/) (the `docker compose` CLI plugin)
-- Host ports `3004` and `6380` free
-- An OpenAI API key with Realtime API access (for live responses)
+- Docker with Compose v2
+- Host ports `3004` and `6380` free (bound to 127.0.0.1 only)
+- An OpenAI API key with Realtime access
 
-## Run
-
-```bash
-docker compose up -d --build
-```
-
-This builds the app image and starts both services in the background.
-
-## Services
-
-| Service | Image/Build | Purpose | Port (host:container) | URL |
-|---------|-------------|---------|-----------------------|-----|
-| `app` (`realtime-gpt`) | Build from `./Dockerfile` (`node:18`) | Express + Socket.io + `ws` bridge to the OpenAI Realtime API | `3004:3000` | http://localhost:3004 |
-| `redis` (`realtime-redis`) | `redis:7.2` | State/cache store | `6380:6379` | `127.0.0.1:6380` |
-
-The project directory is bind-mounted into the app container and the container starts via `nodemon --legacy-watch`, so code edits hot-reload.
-
-## Environment
-
-Configuration is loaded from a `.env` file (referenced via `env_file` in `docker-compose.yml`). Create one before running:
-
-```env
-OPENAI_API_KEY=sk-...   # REQUIRED for live Realtime API responses
-REDIS_HOST=redis        # Compose service name (default: redis)
-REDIS_PORT=6379         # (default: 6379)
-PORT=3000               # in-container app port (default: 3000)
-```
-
-| Variable | Required | Default | Notes |
-|----------|----------|---------|-------|
-| `OPENAI_API_KEY` | Yes (for live responses) | `changeme` (Dockerfile fallback) | Must have Realtime API access. The app boots and serves the UI without a valid key, but realtime responses require one. Never commit a real key. |
-| `REDIS_HOST` | No | `redis` | Overridden to `redis` in compose. |
-| `REDIS_PORT` | No | `6379` | Overridden to `6379` in compose. |
-| `PORT` | No | `3000` | In-container listen port; mapped to host `3004`. |
-
-## Volumes & persistence
-
-- Named volume `redis_data` → `redis:/data` — persists Redis data across container restarts.
-- Bind mount `.:/usr/src/app` — mounts the project source into the app container for hot reload.
-- Anonymous volume `/usr/src/app/node_modules` — preserves the container's installed `node_modules` (prevents the bind mount from shadowing them).
-
-## Common commands
+## Quick start
 
 ```bash
-docker compose logs -f app      # follow app logs (expect "Server running..." and Redis connect)
-docker compose ps               # list service status
-docker compose down             # stop and remove containers (keeps redis_data)
-docker compose down -v          # also remove the redis_data volume
-docker compose up -d --build    # rebuild and restart
-docker compose exec app sh      # shell into the app container
-docker compose exec redis redis-cli   # open a Redis CLI
+cp .env.example .env      # then edit .env and set OPENAI_API_KEY
+docker compose up -d --build -V
 ```
 
-## Verify
+Open http://localhost:3004. `-V` renews the anonymous `node_modules` volume; without it, stale modules persist after dependency changes. The project directory is bind-mounted and `nodemon --legacy-watch` hot-reloads code edits.
+
+## Configuration (`.env`)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | none | Required for live responses. Never commit it. |
+| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | |
+| `OPENAI_REALTIME_URL` | `wss://api.openai.com/v1/realtime` | Override for mock testing. |
+| `OPENAI_VOICE` | `marin` | |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | |
+| `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Compose forces these for the app. |
+| `REDIS_PASSWORD` | empty | Optional; Redis then starts with `--requirepass`. |
+| `PORT` | `3000` | In-container port (host `3004`). |
+| `APP_ACCESS_TOKEN` | empty | When set, the browser must enter it. |
+| `ALLOWED_ORIGINS` | empty | Comma list; empty means same-origin only. |
+| `MAX_CONNECTIONS` | `20` | |
+| `BRAIN_MAX_CHARS` | `20000` | |
+
+See `.env.example` for comments.
+
+## Security notes
+
+- Ports are published on `127.0.0.1` only. Set `APP_ACCESS_TOKEN` (and ideally `REDIS_PASSWORD`) before exposing the app through a proxy or other interface, and add the public origin to `ALLOWED_ORIGINS`.
+- Never commit `.env` (it is git- and docker-ignored).
+- Containers run with `no-new-privileges`; the app runs as the unprivileged `node` user.
+
+## Tests
 
 ```bash
-curl -I http://localhost:3004   # expect HTTP 200
+docker compose run --rm app npm test
 ```
 
-Then open http://localhost:3004 in a browser and start a session (live responses require a valid `OPENAI_API_KEY`).
+## Mock mode
+
+Run the mock Realtime server (`scripts/mock-realtime.js`) with `npm run mock:realtime`, then set `OPENAI_REALTIME_URL=ws://<host>:8089` in `.env` (from inside a container, use a host reachable from it, e.g. `host.docker.internal`).
+
+## Production image
+
+```bash
+docker build --target prod -t realtime-gpt:prod .
+docker run -d --name realtime-gpt --env-file .env -e REDIS_HOST=redis \
+  --network <network-with-redis> -p 127.0.0.1:3004:3000 realtime-gpt:prod
+```
+
+The prod image has production dependencies only, runs `node server.js`, and has a built-in HEALTHCHECK.
+
+## Health check
+
+`GET /healthz` returns 200 when healthy, 503 if Redis is down.
+
+```bash
+curl -i http://localhost:3004/healthz
+docker compose ps
+```
+
+## Backup / restore the brain
+
+```bash
+# text backup
+docker compose exec redis redis-cli GET vbrain:content > brain-backup.txt
+
+# full snapshot
+docker compose exec redis redis-cli BGSAVE        # wait a moment (add -a "$REDIS_PASSWORD" if set)
+docker compose cp redis:/data/dump.rdb ./dump.rdb
+```
+
+To restore a snapshot: stop Redis, copy `dump.rdb` into the `redis_data` volume at `/data/dump.rdb`, start Redis. Data lives in the named volume `redis_data`; `docker compose down -v` deletes it.
+
+## Troubleshooting
+
+- Microphone does not work: browsers require https or `localhost`.
+- "NO_API_KEY" banner: `OPENAI_API_KEY` is missing in `.env`; recreate with `docker compose up -d`.
+- Module not found / stale dependencies: `docker compose up -d --build -V`.
+
+## Notes
+
+`readme.txt` is superseded by this file.
