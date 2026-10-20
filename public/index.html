@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🧠 ChatGPT Brain Manager (Realtime Voice)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body {
+      background: radial-gradient(circle at top, #111827 0%, #000 100%);
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+    .glow { text-shadow: 0 0 10px rgba(168, 85, 247, 0.7); }
+  </style>
+</head>
+<body class="text-white flex flex-col h-screen w-screen">
+
+  <header class="bg-gray-800/80 border-b border-gray-700 p-5 text-center shadow-md">
+    <h1 class="text-3xl font-bold glow">🧠 ChatGPT Brain Manager (Realtime Voice)</h1>
+  </header>
+
+  <main class="flex flex-1 h-full w-full overflow-hidden">
+    <section class="w-1/2 bg-gray-900/80 border-r border-gray-700 p-8 flex flex-col h-full">
+      <h2 class="text-2xl font-semibold mb-5">🧬 Brain Memory</h2>
+      <textarea id="brainInput"
+        placeholder="💭 Enter or update your brain content here..."
+        class="flex-1 w-full p-5 rounded-lg text-lg bg-gray-800 text-gray-200 border border-gray-700 resize-none focus:ring-2 focus:ring-purple-500"
+      ></textarea>
+      <div class="flex gap-4 mt-6">
+        <button id="saveBrain"
+          class="flex-1 bg-green-600 hover:bg-green-700 font-semibold py-3 rounded-lg text-lg shadow-md shadow-green-800/30">💾 Save</button>
+        <button id="getBrain"
+          class="flex-1 bg-blue-600 hover:bg-blue-700 font-semibold py-3 rounded-lg text-lg shadow-md shadow-blue-800/30">📦 Load</button>
+      </div>
+    </section>
+
+    <section class="flex-1 bg-gray-800/80 flex flex-col h-full">
+      <div id="output" class="flex-1 p-6 overflow-y-auto space-y-5 text-gray-100 border-b border-gray-700 bg-gray-900/60">
+        <div class="text-gray-400 italic text-lg">🎧 Waiting for you to speak...</div>
+      </div>
+
+      <div class="p-5 bg-gray-900/90 border-t border-gray-700 flex gap-4 items-center">
+        <button id="micButton"
+          class="bg-purple-600 hover:bg-purple-700 active:scale-95 font-semibold px-8 py-4 text-lg rounded-full shadow-md shadow-purple-800/30 transition-all">
+          🎙️ Start Talking
+        </button>
+      </div>
+    </section>
+  </main>
+
+<script>
+  const socket = io({
+    transports: ['websocket'],
+    reconnection: true
+  });
+
+  const output = document.getElementById('output');
+  const brainInput = document.getElementById('brainInput');
+  const micButton = document.getElementById('micButton');
+  const saveBrain = document.getElementById('saveBrain');
+  const getBrain = document.getElementById('getBrain');
+
+  let recording = false;
+  let mediaRecorder;
+  let audioChunks = [];
+
+  function appendMessage(content, type = 'system') {
+    const msg = document.createElement('div');
+    msg.classList.add('p-3', 'rounded-lg', 'max-w-3xl', 'whitespace-pre-wrap');
+    if (type === 'user') msg.classList.add('bg-purple-700/40', 'self-end', 'ml-auto');
+    else if (type === 'bot') msg.classList.add('bg-gray-700/50', 'self-start', 'mr-auto');
+    else msg.classList.add('text-gray-400', 'italic', 'text-sm');
+    msg.innerHTML = content;
+    output.appendChild(msg);
+    output.scrollTop = output.scrollHeight;
+  }
+
+  // === SOCKET EVENTS ===
+  socket.on('connect', () => appendMessage('✅ Connected to backend.'));
+  socket.on('disconnect', () => appendMessage('❌ Disconnected.'));
+  socket.on('realtimeReady', (d) => appendMessage('🧠 ' + d.message));
+  socket.on('realtimeError', (d) => appendMessage('⚠️ ' + d));
+
+  socket.on('realtimeText', (text) => {
+    if (text?.length) appendMessage(`🤖 ${text}`, 'bot');
+  });
+
+  socket.on('dataSetSuccess', (msg) => appendMessage(msg));
+  socket.on('dataError', (msg) => appendMessage(msg));
+
+  socket.on('loadBrain', (data) => {
+    brainInput.value = data || '';
+    appendMessage('📦 Brain loaded.');
+  });
+
+  // === SAVE BRAIN ===
+  saveBrain.addEventListener('click', () => {
+    const value = brainInput.value.trim();
+    if (!value) return appendMessage('⚠️ Brain cannot be empty.');
+    socket.emit('setData', { value });
+    appendMessage('💾 Brain saved.');
+  });
+
+  // === LOAD BRAIN ===
+  getBrain.addEventListener('click', () => {
+    socket.emit('getData');
+  });
+
+  // === VOICE HANDLER ===
+// === VOICE HANDLER ===
+micButton.addEventListener('click', async () => {
+  if (!recording) {
+    try {
+      console.log('🎙 Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('✅ Microphone access granted.');
+
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        console.log('🎧 Captured audio chunk:', e.data);
+        audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        console.log('🛑 Recording stopped. Encoding audio...');
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const buffer = await blob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+
+        console.log('🚀 Sending base64 audio to server...');
+        socket.emit('clientAudio', base64);
+        appendMessage('🗣️ Sending your voice...', 'user');
+      };
+
+      mediaRecorder.start();
+      console.log('🔴 Recording started.');
+      recording = true;
+      micButton.textContent = '🛑 Stop Talking';
+      micButton.classList.replace('bg-purple-600', 'bg-red-600');
+    } catch (err) {
+      console.error('🎙️ Mic error:', err);
+      appendMessage('⚠️ Failed to access microphone.');
+    }
+  } else {
+    console.log('🛑 Stopping recording...');
+    mediaRecorder.stop();
+    recording = false;
+    micButton.textContent = '🎙️ Start Talking';
+    micButton.classList.replace('bg-red-600', 'bg-purple-600');
+  }
+});
+
+  
+</script>
+</body>
+</html>

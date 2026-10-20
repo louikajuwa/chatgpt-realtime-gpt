@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    container_name: realtime-gpt
+    ports:
+      - "3004:3000"
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - .:/usr/src/app              # ✅ Mount your entire project folder
+      - /usr/src/app/node_modules   # ✅ Keep container’s node_modules intact
+    command: sh -c "sleep 5 && nodemon --legacy-watch server.js"  # ✅ Live reload support
+
+  redis:
+    image: redis:7.2
+    container_name: realtime-redis
+    restart: "no"
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
