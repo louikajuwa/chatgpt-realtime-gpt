@@ -99,3 +99,7 @@ To restore a snapshot: stop Redis, copy `dump.rdb` into the `redis_data` volume 
 ## Notes
 
 `readme.txt` is superseded by this file.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
